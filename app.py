@@ -7,11 +7,14 @@ Run locally:
     streamlit run app.py
 """
 
+import io
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import streamlit as st
+import streamlit.components.v1 as components
 from scipy import stats
 
 from sklearn.preprocessing import StandardScaler, LabelEncoder
@@ -67,9 +70,40 @@ knowing that's what it is.
 # ----------------------------------------------------------------------
 # Data loading
 # ----------------------------------------------------------------------
-st.sidebar.header("📂 Data")
+st.sidebar.header("📥 Import Data")
 uploaded_file = st.sidebar.file_uploader(
-    "Upload gaming_player_stats.xlsx (or .csv)", type=["xlsx", "xls", "csv"]
+    "📥 Import gaming_player_stats.xlsx (or .csv)", type=["xlsx", "xls", "csv"]
+)
+# Streamlit's file_uploader always renders its own button labeled "Browse files"
+# with no API to rename it, so relabel it in the DOM directly.
+components.html(
+    """
+    <script>
+    const relabel = () => {
+        const doc = window.parent.document;
+        doc.querySelectorAll('button').forEach((btn) => {
+            if (btn.innerText.trim() === 'Browse files') {
+                btn.innerText = 'Import';
+            }
+        });
+    };
+    relabel();
+    new MutationObserver(relabel).observe(window.parent.document.body, {
+        childList: true, subtree: true,
+    });
+    </script>
+    """,
+    height=0,
+)
+data_action = st.sidebar.selectbox(
+    "⚙️ Import / Export / Format",
+    ["Import", "Format", "Export"],
+    index=0,
+    help=(
+        "Import: just load the file and view the dashboard. "
+        "Format: open the column-mapping tool even if your file already matches our format. "
+        "Export: download your data in our standard format instead of viewing the dashboard."
+    ),
 )
 
 
@@ -81,12 +115,13 @@ def load_data(file) -> pd.DataFrame:
 
 
 if uploaded_file is None:
-    st.info("👈 Upload your `gaming_player_stats.xlsx` file in the sidebar to get started.")
+    st.info("👈 Import your `gaming_player_stats.xlsx` file in the sidebar to get started.")
     st.stop()
 
 df_uploaded = load_data(uploaded_file)
 
 missing = [c for c in REQUIRED_COLS if c not in df_uploaded.columns]
+show_mapping_ui = bool(missing) or data_action == "Format"
 
 # ----------------------------------------------------------------------
 # Column mapping / format-conversion UI
@@ -110,18 +145,23 @@ def _best_guess(required_col: str, available_cols: list) -> str:
     return "-- None --"
 
 
-if missing:
-    st.warning(
-        "This file doesn't match our required format. Missing column(s): "
-        + ", ".join(f"`{c}`" for c in missing)
-        + ". You can map your file's columns to our expected format below instead of "
-        "re-uploading a reformatted file."
-    )
+if show_mapping_ui:
+    if missing:
+        st.warning(
+            "This file doesn't match our required format. Missing column(s): "
+            + ", ".join(f"`{c}`" for c in missing)
+            + ". You can map your file's columns to our expected format below instead of "
+            "re-importing a reformatted file."
+        )
+    else:
+        st.info("Your file already matches our required format. You can still adjust the mapping below if you'd like.")
 
     with st.expander("🔄 Convert / map columns to our standard format", expanded=True):
         st.caption(
             "For each required field, choose the column from your file that corresponds to it. "
-            "Fields already matching your file's headers are pre-filled."
+            "Fields already matching your file's headers are pre-filled. Leave a field as "
+            "`-- None --` if your file has no equivalent — the dashboard will still run, just "
+            "with the specific analyses that need that field skipped."
         )
         available = list(df_uploaded.columns)
         options = ["-- None --"] + available
@@ -141,10 +181,6 @@ if missing:
                     f"`{req_col}`", options, index=idx, key=f"map_{mapping_key}_{req_col}"
                 )
 
-            st.caption(
-            "Leave a field as `-- None --` if your file has no equivalent — the dashboard "
-            "will still run, just with the specific analyses that need that field skipped."
-        )
         apply_clicked = st.button("✅ Apply mapping & continue", type="primary")
 
     unmapped = [rc for rc, src in st.session_state[mapping_key].items() if src == "-- None --"]
@@ -174,6 +210,32 @@ else:
     df_raw = df_uploaded
 
 st.sidebar.success(f"Loaded {len(df_raw):,} players, {df_raw.shape[1]} columns")
+
+if data_action == "Export":
+    st.header("⬇️ Export")
+    st.markdown(
+        "Download your data converted into our standard column format "
+        f"(`{uploaded_file.name}` → standardized)."
+    )
+    st.dataframe(df_raw.head(20), use_container_width=True)
+
+    csv_bytes = df_raw.to_csv(index=False).encode("utf-8")
+    excel_buffer = io.BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+        df_raw.to_excel(writer, index=False, sheet_name="data")
+    excel_bytes = excel_buffer.getvalue()
+
+    exp1, exp2 = st.columns(2)
+    exp1.download_button(
+        "⬇️ Download as CSV", data=csv_bytes,
+        file_name="gaming_player_stats_standardized.csv", mime="text/csv",
+    )
+    exp2.download_button(
+        "⬇️ Download as Excel", data=excel_bytes,
+        file_name="gaming_player_stats_standardized.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    st.stop()
 
 # Which required columns are simply not available, no matter how we got here
 # (missing outright, or explicitly left unmapped above) — used throughout to
